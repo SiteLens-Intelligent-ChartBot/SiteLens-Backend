@@ -41,12 +41,20 @@ def answer_question(query: str) -> str:
 
     query_embedding = model.encode([query])
     similarities = cosine_similarity(query_embedding, passage_embeddings)[0]
-    best_idx = int(np.argmax(similarities))
-    best_score = float(similarities[best_idx])
+
+    best_idx = -1
+    best_score = -1.0
+
+    # Scan from last to first → latest statements win
+    for i in range(len(similarities) - 1, -1, -1):
+        if similarities[i] > best_score:
+            best_score = similarities[i]
+            best_idx = i
 
     if best_score < 0.4:
         return "I don't know the answer to that."
     return passages[best_idx]
+
 
 def add_statement(text: str):
     """Add a new statement dynamically and save."""
