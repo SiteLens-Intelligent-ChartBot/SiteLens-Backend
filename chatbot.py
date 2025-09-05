@@ -4,76 +4,68 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
-import os
+from pymongo import MongoClient
 
-# Load embedding model once
+# -----------------------------
+# MongoDB Atlas Setup
+# -----------------------------
+MONGO_URI = "mongodb+srv://kumarswarup7272_db_user:6SS630zpcEU852EV@cluster0.7x8rukv.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+DB_NAME = "sitelense_chats"
+COLLECTION_NAME = "sitelense_ai"
+
+client = MongoClient(MONGO_URI)
+db = client[DB_NAME]
+collection = db[COLLECTION_NAME]
+
+# -----------------------------
+# Embedding Model
+# -----------------------------
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# File where data is stored
-DATA_FILE = "college_data.txt"
-
-# In-memory store
-passages = []
-passage_embeddings = []
-
-def load_initial_data():
-    global passages, passage_embeddings
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            passages[:] = [line.strip() for line in f if line.strip()]
-        passage_embeddings[:] = model.encode(passages)
-    else:
-        passages.clear()
-        passage_embeddings.clear()
-
-# Call at startup
-load_initial_data()
-
-def save_to_file():
-    """Write all passages back to file."""
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        for line in passages:
-            f.write(line + "\n")
 
 def answer_question(query: str) -> str:
-    if not passages:
+    """Find best matching statement from MongoDB (latest overrides older ones)."""
+    docs = list(
+        collection.find({}, {"_id": 1, "text": 1, "embedding": 1})
+        .sort([("_id", -1)])  # newest → oldest
+    )
+
+    if not docs:
         return "No knowledge available yet. Please add statements first."
 
     query_embedding = model.encode([query])
-    similarities = cosine_similarity(query_embedding, passage_embeddings)[0]
 
-    best_idx = -1
-    best_score = -1.0
+    for doc in docs:  # check latest first
+        if "embedding" not in doc:
+            continue
 
-    # Scan from last to first → latest statements win
-    for i in range(len(similarities) - 1, -1, -1):
-        if similarities[i] > best_score:
-            best_score = similarities[i]
-            best_idx = i
+        emb = np.array(doc["embedding"]).reshape(1, -1)
+        sim = cosine_similarity(query_embedding, emb)[0][0]
 
-    if best_score < 0.4:
-        return "I don't know the answer to that."
-    return passages[best_idx]
+        if sim >= 0.4:  # similarity threshold
+            return doc["text"]
+
+    return "I don't know the answer to that."
+
 
 
 def add_statement(text: str):
-    """Add a new statement dynamically and save."""
-    global passages, passage_embeddings
-    passages.append(text)
-    emb = model.encode([text])[0]
-    passage_embeddings.append(emb)
-    save_to_file()
+    """Add a new statement to MongoDB with embedding"""
+    emb = model.encode([text])[0].tolist()  # convert to list for MongoDB storage
+    collection.insert_one({"text": text, "embedding": emb})
+
 
 def delete_statement(text: str):
-    """Delete a statement dynamically and save."""
-    global passages, passage_embeddings
-    if text in passages:
-        idx = passages.index(text)
-        passages.pop(idx)
-        passage_embeddings.pop(idx)
-        save_to_file()
+    """Delete the latest occurrence of a statement from MongoDB"""
+    # Find latest document with this text
+    doc = collection.find_one({"text": text}, sort=[("_id", -1)])
+    if doc:
+        collection.delete_one({"_id": doc["_id"]})
         return True
     return False
 
+
 def list_statements():
-    return passages
+    """Return all statements sorted from latest → oldest"""
+    docs = collection.find({}, {"_id": 0, "text": 1}).sort([("_id", -1)])
+    return [doc["text"] for doc in docs]
