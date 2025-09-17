@@ -1,5 +1,8 @@
 fastapi
 uvicorn
+pydantic
+pymongo
 sentence-transformers
 scikit-learn
 numpy
+google-genai
