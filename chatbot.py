@@ -5,6 +5,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from pymongo import MongoClient
+import time, random
 
 # -----------------------------
 # MongoDB Atlas Setup
@@ -22,46 +23,43 @@ collection = db[COLLECTION_NAME]
 # -----------------------------
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-from google import genai
-from google.genai import errors
-import time, random
+# -----------------------------
+# Gemini Setup (correct SDK)
+# -----------------------------
+import google.generativeai as genai
 
-client = genai.Client(api_key="AIzaSyDpo-BntSkQLg4jMMCzr09tX8c4I3IHEMc")
+genai.configure(api_key="AIzaSyAPmQlWLJz3XH2PcuoGujeN1okniir6DTU")
+gemini_model = genai.GenerativeModel("gemini-2.5-flash")
+
 
 def safe_rewrite(original_text: str) -> str:
-    """Call Gemini API with retries. Falls back to original_text if it keeps failing."""
+    """Call Gemini API with retries. Falls back to raw context if it fails."""
     for attempt in range(5):
         try:
-            response = client.models.generate_content(
-                model="gemini-1.5-flash",
-                contents=f"Please answer the user’s question naturally using this information:\n\n{original_text}"
+            response = gemini_model.generate_content(
+                f"Please answer the user’s question naturally using this information:\n\n{original_text}"
             )
-            return response.text if response.text else original_text.split("Context: ", 1)[1]
-        
-        
-        except errors.ClientError as e:  
-            if "RESOURCE_EXHAUSTED" in str(e):
+            if response and response.text:
+                return response.text
+            else:
+                return original_text.split("Context: ", 1)[1]
+
+        except Exception as e:
+            err = str(e)
+            if "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
                 print("❌ Gemini quota exceeded → using fallback.")
                 return original_text.split("Context: ", 1)[1]
-            raise 
 
+            print(f"⚠️ Gemini error on attempt {attempt+1}: {err}")
+            time.sleep(2 ** attempt + random.random())  # exponential backoff
 
-        except errors.ServerError:
-            print(f"⚠️ Gemini overloaded (attempt {attempt+1}) → retrying...")
-            time.sleep(2 ** attempt + random.random())
-
-    return original_text.split("Context: ", 1)[1]  # fallback
-
-
-
-
+    # Final fallback
+    return original_text.split("Context: ", 1)[1]
 
 
 def answer_question(query: str) -> str:
     """Find the best matching statement from MongoDB (highest similarity)."""
-    docs = list(
-        collection.find({}, {"_id": 1, "text": 1, "embedding": 1})
-    )
+    docs = list(collection.find({}, {"_id": 1, "text": 1, "embedding": 1}))
 
     if not docs:
         return "No knowledge available yet. Please add statements first."
@@ -88,8 +86,6 @@ def answer_question(query: str) -> str:
     return "I don't know the answer to that."
 
 
-
-
 def add_statement(text: str):
     """Add a new statement to MongoDB with embedding"""
     emb = model.encode([text])[0].tolist()  # convert to list for MongoDB storage
@@ -98,7 +94,6 @@ def add_statement(text: str):
 
 def delete_statement(text: str):
     """Delete the latest occurrence of a statement from MongoDB"""
-    # Find latest document with this text
     doc = collection.find_one({"text": text}, sort=[("_id", -1)])
     if doc:
         collection.delete_one({"_id": doc["_id"]})

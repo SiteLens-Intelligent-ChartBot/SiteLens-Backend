@@ -42,3 +42,6 @@ def admin_delete(statement: Statement):
 @app.get("/admin/list")
 def admin_list():
     return {"count": len(list_statements()), "statements": list_statements()}
+
+# Run - 
+# uvicorn api:app --port 8080 --reload
